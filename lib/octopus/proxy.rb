@@ -197,6 +197,7 @@ module Octopus
       elsif should_send_queries_to_replicated_databases?(method)
         send_queries_to_selected_slave(method, *args, &block)
       else
+        select_connection.verify!
         val = select_connection.send(method, *args, &block)
 
         if val.instance_of? ActiveRecord::Result
@@ -288,6 +289,7 @@ module Octopus
     # while preserving `current_shard`
     def send_queries_to_slave(slave, method, *args, &block)
       using_shard(slave) do
+        select_connection.verify!
         val = select_connection.send(method, *args, &block)
         if val.instance_of? ActiveRecord::Result
           val.current_shard = slave
