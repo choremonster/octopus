@@ -4,6 +4,8 @@ require 'octopus/load_balancing/round_robin'
 
 module Octopus
   class Proxy
+    RECONNECT_ATTEMPTS = 3
+
     attr_accessor :proxy_config
 
     delegate :current_model, :current_model=,
@@ -197,7 +199,10 @@ module Octopus
       elsif should_send_queries_to_replicated_databases?(method)
         send_queries_to_selected_slave(method, *args, &block)
       else
-        select_connection.verify!
+        RECONNECT_ATTEMPTS.times do
+          break if select_connection.active?
+          select_connection.verify!
+        end
         val = select_connection.send(method, *args, &block)
 
         if val.instance_of? ActiveRecord::Result
@@ -289,7 +294,10 @@ module Octopus
     # while preserving `current_shard`
     def send_queries_to_slave(slave, method, *args, &block)
       using_shard(slave) do
-        select_connection.verify!
+        RECONNECT_ATTEMPTS.times do
+          break if select_connection.active?
+          select_connection.verify!
+        end
         val = select_connection.send(method, *args, &block)
         if val.instance_of? ActiveRecord::Result
           val.current_shard = slave
