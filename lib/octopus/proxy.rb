@@ -4,8 +4,6 @@ require 'octopus/load_balancing/round_robin'
 
 module Octopus
   class Proxy
-    RECONNECT_ATTEMPTS = 3
-
     attr_accessor :proxy_config
 
     delegate :current_model, :current_model=,
@@ -73,7 +71,12 @@ module Octopus
     def safe_connection(connection_pool)
       connection_pool.automatic_reconnect ||= true
       if !connection_pool.connected? && shards[Octopus.master_shard].connection.query_cache_enabled
-        connection_pool.connection.enable_query_cache!
+        while !select_connection.active?
+          select_connection.verify!
+        end
+        if !select_connection.active?
+          connection_pool.connection.enable_query_cache!
+        end
       end
       connection_pool.connection
     end
@@ -191,6 +194,9 @@ module Octopus
       if should_clean_connection_proxy?(method)
         conn = select_connection
         clean_connection_proxy
+        while !select_connection.active?
+          select_connection.verify!
+        end
         conn.send(method, *args, &block)
       elsif should_send_queries_to_shard_slave_group?(method)
         send_queries_to_shard_slave_group(method, *args, &block)
@@ -199,8 +205,7 @@ module Octopus
       elsif should_send_queries_to_replicated_databases?(method)
         send_queries_to_selected_slave(method, *args, &block)
       else
-        RECONNECT_ATTEMPTS.times do
-          break if select_connection.active?
+        while !select_connection.active?
           select_connection.verify!
         end
         val = select_connection.send(method, *args, &block)
@@ -294,8 +299,7 @@ module Octopus
     # while preserving `current_shard`
     def send_queries_to_slave(slave, method, *args, &block)
       using_shard(slave) do
-        RECONNECT_ATTEMPTS.times do
-          break if select_connection.active?
+        while !select_connection.active?
           select_connection.verify!
         end
         val = select_connection.send(method, *args, &block)
