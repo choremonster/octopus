@@ -16,6 +16,8 @@ module Octopus
              :shards_slave_groups, :slave_groups, :replicated, :slaves_load_balancer,
              :config, :initialize_shards, :shard_name, to: :proxy_config, prefix: false
 
+    RECONNECT_ATTEMPTS = 3
+
     def initialize(config = Octopus.config)
       self.proxy_config = Octopus::ProxyConfig.new(config)
     end
@@ -71,11 +73,11 @@ module Octopus
     def safe_connection(connection_pool)
       connection_pool.automatic_reconnect ||= true
       if !connection_pool.connected? && shards[Octopus.master_shard].connection.query_cache_enabled
-        while !select_connection.active?
-          select_connection.verify!
-        end
         if !select_connection.active?
-          connection_pool.connection.enable_query_cache!
+          RECONNECT_ATTEMPTS.times do |i|
+            break if !select_connection.active?
+            select_connection.verify!
+          end
         end
       end
       connection_pool.connection
@@ -194,8 +196,11 @@ module Octopus
       if should_clean_connection_proxy?(method)
         conn = select_connection
         clean_connection_proxy
-        while !select_connection.active?
-          select_connection.verify!
+        if !select_connection.active?
+          RECONNECT_ATTEMPTS.times do |i|
+            break if !select_connection.active?
+            select_connection.verify!
+          end
         end
         conn.send(method, *args, &block)
       elsif should_send_queries_to_shard_slave_group?(method)
@@ -205,8 +210,11 @@ module Octopus
       elsif should_send_queries_to_replicated_databases?(method)
         send_queries_to_selected_slave(method, *args, &block)
       else
-        while !select_connection.active?
-          select_connection.verify!
+        if !select_connection.active?
+          RECONNECT_ATTEMPTS.times do |i|
+            break if !select_connection.active?
+            select_connection.verify!
+          end
         end
         val = select_connection.send(method, *args, &block)
 
@@ -299,8 +307,11 @@ module Octopus
     # while preserving `current_shard`
     def send_queries_to_slave(slave, method, *args, &block)
       using_shard(slave) do
-        while !select_connection.active?
-          select_connection.verify!
+        if !select_connection.active?
+          RECONNECT_ATTEMPTS.times do |i|
+            break if !select_connection.active?
+            select_connection.verify!
+          end
         end
         val = select_connection.send(method, *args, &block)
         if val.instance_of? ActiveRecord::Result
