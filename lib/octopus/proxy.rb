@@ -4,8 +4,6 @@ require 'octopus/load_balancing/round_robin'
 
 module Octopus
   class Proxy
-    RECONNECT_ATTEMPTS = 3
-
     attr_accessor :proxy_config
 
     delegate :current_model, :current_model=,
@@ -17,6 +15,8 @@ module Octopus
              :shard_names, :shards_for_group, :shards, :sharded, :slaves_list,
              :shards_slave_groups, :slave_groups, :replicated, :slaves_load_balancer,
              :config, :initialize_shards, :shard_name, to: :proxy_config, prefix: false
+
+    RECONNECT_ATTEMPTS = 3
 
     def initialize(config = Octopus.config)
       self.proxy_config = Octopus::ProxyConfig.new(config)
@@ -73,6 +73,8 @@ module Octopus
     def safe_connection(connection_pool)
       connection_pool.automatic_reconnect ||= true
       if !connection_pool.connected? && shards[Octopus.master_shard].connection.query_cache_enabled
+        conn = connection_pool.connection
+        verify_connection!(conn)
         connection_pool.connection.enable_query_cache!
       end
       connection_pool.connection
@@ -199,10 +201,6 @@ module Octopus
       elsif should_send_queries_to_replicated_databases?(method)
         send_queries_to_selected_slave(method, *args, &block)
       else
-        RECONNECT_ATTEMPTS.times do
-          break if select_connection.active?
-          select_connection.verify!
-        end
         val = select_connection.send(method, *args, &block)
 
         if val.instance_of? ActiveRecord::Result
@@ -294,10 +292,6 @@ module Octopus
     # while preserving `current_shard`
     def send_queries_to_slave(slave, method, *args, &block)
       using_shard(slave) do
-        RECONNECT_ATTEMPTS.times do
-          break if select_connection.active?
-          select_connection.verify!
-        end
         val = select_connection.send(method, *args, &block)
         if val.instance_of? ActiveRecord::Result
           val.current_shard = slave
@@ -349,6 +343,18 @@ module Octopus
       ensure
         self.current_group = older_group
       end
+    end
+
+    # verify connection being used to prevent DB connection being dropped
+    def verify_connection!(conn)
+      return conn if conn.active?
+
+      RECONNECT_ATTEMPTS.times do
+        break if conn.active?
+        conn.verify!
+      end
+
+      conn
     end
   end
 end
