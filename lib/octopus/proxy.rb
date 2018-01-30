@@ -73,10 +73,14 @@ module Octopus
     def safe_connection(connection_pool)
       connection_pool.automatic_reconnect ||= true
       if !connection_pool.connected? && shards[Octopus.master_shard].connection.query_cache_enabled
-        conn = connection_pool.connection
-        verify_connection!(conn)
-        connection_pool.connection.enable_query_cache!
+        conn.enable_query_cache! unless connection_pool.connection.active?
       end
+
+      RECONNECT_ATTEMPTS.times do |i|
+        break if connection_pool.connection.active? && connection_pool.connected?
+        verify_connection!(connection_pool.connection)
+      end
+
       connection_pool.connection
     end
 
